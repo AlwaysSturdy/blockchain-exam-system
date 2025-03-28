@@ -1,5 +1,5 @@
-const Submission = require("../models/Submission");
 const Exam = require("../models/Exam");
+const Question = require("../models/Question");
 const gradingContract = require("../utils/web3Provider");
 const { generateSubmissionHash } = require("../utils/hashUtils");
 
@@ -7,41 +7,33 @@ exports.submitExam = async (req, res) => {
   try {
     const { examId, answers } = req.body;
 
-    // 1. Lấy đề thi từ MongoDB
+    // 1. Kiểm tra đề thi tồn tại
     const exam = await Exam.findById(examId);
     if (!exam) return res.status(404).json({ error: "Exam not found" });
 
-    // 2. Chấm điểm tự động
-    const correctAnswers = exam.questions.map(q => q.correctAnswer);
+    // 2. Lấy danh sách câu hỏi từ bảng riêng
+    const questions = await Question.find({ examId }).sort("_id");
+    if (questions.length === 0) return res.status(400).json({ error: "No questions found for this exam" });
+
+    // 3. Tự động chấm điểm
     let score = 0;
-    answers.forEach((a, i) => {
-      if (a === correctAnswers[i]) score += 1;
+    questions.forEach((q, i) => {
+      if (answers[i] === q.correctAnswer) score += 1;
     });
 
-    // 3. Tạo hash bài làm + điểm
+    // 4. Tạo hash từ bài làm + điểm
     const submissionHash = generateSubmissionHash({ examId, answers, score });
 
-    // 4. Gọi smart contract SaveGrading.recordSubmission(...)
+    // 5. Gọi smart contract
     const tx = await gradingContract.recordSubmission(
       examId,
-      req.user.address,        // địa chỉ ví sinh viên (lưu trong req.user)
+      req.user.address,
       submissionHash,
       score
     );
     await tx.wait();
 
-    // 5. Lưu vào MongoDB
-    const submission = new Submission({
-      student: req.user._id,
-      exam: examId,
-      answers,
-      score,
-      submissionHash,
-      txHash: tx.hash
-    });
-
-    await submission.save();
-
+    // 6. Trả kết quả về frontend
     res.json({
       message: "Submission successful",
       score,
@@ -50,16 +42,7 @@ exports.submitExam = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ Submit exam error:", err);
+    console.error("❌ Submit error:", err);
     res.status(500).json({ error: "Submit failed", details: err.message });
-  }
-};
-
-exports.getStudentSubmissions = async (req, res) => {
-  try {
-    const subs = await Submission.find({ student: req.user._id }).populate("exam");
-    res.json(subs);
-  } catch (err) {
-    res.status(500).json({ error: "Get submissions failed", details: err.message });
   }
 };
